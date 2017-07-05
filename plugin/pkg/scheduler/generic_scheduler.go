@@ -135,7 +135,9 @@ func (g *genericScheduler) Schedule(pod *api.Pod, nodeLister algorithm.NodeListe
 	}
 
 	trace.Step("Selecting host")
-	return g.selectHost(priorityList)
+	topNode, selectErr := g.selectHost(priorityList)
+
+	return topNode, selectErr
 }
 
 // selectHost takes a prioritized list of nodes and then picks one

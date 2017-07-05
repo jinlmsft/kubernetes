@@ -2249,6 +2249,7 @@ func autoConvert_v1_NodeStatus_To_api_NodeStatus(in *NodeStatus, out *api.NodeSt
 	out.Images = *(*[]api.ContainerImage)(unsafe.Pointer(&in.Images))
 	out.VolumesInUse = *(*[]api.UniqueVolumeName)(unsafe.Pointer(&in.VolumesInUse))
 	out.VolumesAttached = *(*[]api.AttachedVolume)(unsafe.Pointer(&in.VolumesAttached))
+	out.Scorer = *(*api.ResourceScorer)(unsafe.Pointer(&in.Scorer))
 	return nil
 }
 
@@ -2271,6 +2272,7 @@ func autoConvert_api_NodeStatus_To_v1_NodeStatus(in *api.NodeStatus, out *NodeSt
 	out.Images = *(*[]ContainerImage)(unsafe.Pointer(&in.Images))
 	out.VolumesInUse = *(*[]UniqueVolumeName)(unsafe.Pointer(&in.VolumesInUse))
 	out.VolumesAttached = *(*[]AttachedVolume)(unsafe.Pointer(&in.VolumesAttached))
+	out.Scorer = *(*ResourceScorer)(unsafe.Pointer(&in.Scorer))
 	return nil
 }
 
@@ -3092,6 +3094,7 @@ func autoConvert_v1_PodSpec_To_api_PodSpec(in *PodSpec, out *api.PodSpec, s conv
 	out.ImagePullSecrets = *(*[]api.LocalObjectReference)(unsafe.Pointer(&in.ImagePullSecrets))
 	out.Hostname = in.Hostname
 	out.Subdomain = in.Subdomain
+	out.AllocatingResources = in.AllocatingResources
 	return nil
 }
 
@@ -3128,6 +3131,7 @@ func autoConvert_api_PodSpec_To_v1_PodSpec(in *api.PodSpec, out *PodSpec, s conv
 	out.ImagePullSecrets = *(*[]LocalObjectReference)(unsafe.Pointer(&in.ImagePullSecrets))
 	out.Hostname = in.Hostname
 	out.Subdomain = in.Subdomain
+	out.AllocatingResources = in.AllocatingResources
 	return nil
 }
 
@@ -3742,6 +3746,8 @@ func Convert_api_ResourceQuotaStatus_To_v1_ResourceQuotaStatus(in *api.ResourceQ
 func autoConvert_v1_ResourceRequirements_To_api_ResourceRequirements(in *ResourceRequirements, out *api.ResourceRequirements, s conversion.Scope) error {
 	out.Limits = *(*api.ResourceList)(unsafe.Pointer(&in.Limits))
 	out.Requests = *(*api.ResourceList)(unsafe.Pointer(&in.Requests))
+	out.AllocateFrom = *(*api.ResourceLocation)(unsafe.Pointer(&in.AllocateFrom))
+	out.Scorer = *(*api.ResourceScorer)(unsafe.Pointer(&in.Scorer))
 	return nil
 }
 
@@ -3752,6 +3758,8 @@ func Convert_v1_ResourceRequirements_To_api_ResourceRequirements(in *ResourceReq
 func autoConvert_api_ResourceRequirements_To_v1_ResourceRequirements(in *api.ResourceRequirements, out *ResourceRequirements, s conversion.Scope) error {
 	out.Limits = *(*ResourceList)(unsafe.Pointer(&in.Limits))
 	out.Requests = *(*ResourceList)(unsafe.Pointer(&in.Requests))
+	out.AllocateFrom = *(*ResourceLocation)(unsafe.Pointer(&in.AllocateFrom))
+	out.Scorer = *(*ResourceScorer)(unsafe.Pointer(&in.Scorer))
 	return nil
 }
 

@@ -1246,6 +1246,11 @@ type ResourceRequirements struct {
 	// otherwise to an implementation-defined value
 	// +optional
 	Requests ResourceList `json:"requests,omitempty"`
+	// AllocateFrom describes the location of compute resources being used on the node - filled in by scheduler
+	// +optional
+	AllocateFrom ResourceLocation `json:"allocatefrom,omitempty"`
+	// Scorer describes scoring, checking, and taking of resource
+	Scorer ResourceScorer `json:"scorer,omitempty"`
 }
 
 // Container represents a single container that is expected to be run on the host.
@@ -1824,6 +1829,9 @@ type PodSpec struct {
 	// If not specified, the pod will not have a domainname at all.
 	// +optional
 	Subdomain string `json:"subdomain,omitempty"`
+
+	// Tells whether we need to allocate resource locations
+	AllocatingResources bool `json:"-"`
 }
 
 // Sysctl defines a kernel parameter to be set
@@ -2508,6 +2516,9 @@ type NodeStatus struct {
 	// List of volumes that are attached to the node.
 	// +optional
 	VolumesAttached []AttachedVolume `json:"volumesAttached,omitempty"`
+	// Scorer represents the scorer function for the resources on the node
+	// +optional
+	Scorer ResourceScorer `json:"scorer,omitempty"`
 }
 
 type UniqueVolumeName string
@@ -2655,10 +2666,24 @@ const (
 const (
 	// Namespace prefix for opaque counted resources (alpha).
 	ResourceOpaqueIntPrefix = "pod.alpha.kubernetes.io/opaque-int-resource-"
+	// Namespace prefix for group resources (alpha).
+	ResourceGroupPrefix = "alpha.kubernetes.io/group-resource"
 )
 
 // ResourceList is a set of (resource name, quantity) pairs.
 type ResourceList map[ResourceName]resource.Quantity
+
+// ResourceLocation is a set of (resource name, resource location on node) pairs.
+type ResourceLocation map[ResourceName]ResourceName
+
+// ResourceScorer is a set of (resource name, scorer enum) pairs.
+type ResourceScorer map[ResourceName]int32
+
+const (
+	DefaultScorer = iota // 0
+	LeftOverScorer
+	EnumLeftOverScorer
+)
 
 // +genclient=true
 // +nonNamespaced=true

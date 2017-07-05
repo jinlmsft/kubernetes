@@ -1889,6 +1889,15 @@ func DeepCopy_api_NodeStatus(in interface{}, out interface{}, c *conversion.Clon
 		} else {
 			out.VolumesAttached = nil
 		}
+		if in.Scorer != nil {
+			in, out := &in.Scorer, &out.Scorer
+			*out = make(ResourceScorer)
+			for key, val := range *in {
+				(*out)[key] = val
+			}
+		} else {
+			out.Scorer = nil
+		}
 		return nil
 	}
 }
@@ -2731,6 +2740,7 @@ func DeepCopy_api_PodSpec(in interface{}, out interface{}, c *conversion.Cloner)
 		}
 		out.Hostname = in.Hostname
 		out.Subdomain = in.Subdomain
+		out.AllocatingResources = in.AllocatingResources
 		return nil
 	}
 }
@@ -3198,6 +3208,24 @@ func DeepCopy_api_ResourceRequirements(in interface{}, out interface{}, c *conve
 			}
 		} else {
 			out.Requests = nil
+		}
+		if in.AllocateFrom != nil {
+			in, out := &in.AllocateFrom, &out.AllocateFrom
+			*out = make(ResourceLocation)
+			for key, val := range *in {
+				(*out)[key] = val
+			}
+		} else {
+			out.AllocateFrom = nil
+		}
+		if in.Scorer != nil {
+			in, out := &in.Scorer, &out.Scorer
+			*out = make(ResourceScorer)
+			for key, val := range *in {
+				(*out)[key] = val
+			}
+		} else {
+			out.Scorer = nil
 		}
 		return nil
 	}
