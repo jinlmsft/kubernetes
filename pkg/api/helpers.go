@@ -21,6 +21,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"reflect"
+	"regexp"
+	"sort"
 	"strings"
 	"time"
 
@@ -126,6 +128,21 @@ func IsOpaqueIntResourceName(name ResourceName) bool {
 	return strings.HasPrefix(string(name), ResourceOpaqueIntPrefix)
 }
 
+// IsGroupResourceName returns true if the resource name has the group resource prefix
+func IsGroupResourceName(name ResourceName) bool {
+	return strings.HasPrefix(string(name), ResourceGroupPrefix)
+}
+
+// IsEnumResource returns true if resource name is an "enum" resource
+func IsEnumResource(res ResourceName) bool {
+	re := regexp.MustCompile(`\S*/(\S*)`)
+	matches := re.FindStringSubmatch(string(res))
+	if len(matches) >= 2 {
+		return strings.HasPrefix(strings.ToLower(matches[1]), "enum")
+	}
+	return false
+}
+
 // OpaqueIntResourceName returns a ResourceName with the canonical opaque
 // integer prefix prepended. If the argument already has the prefix, it is
 // returned unmodified.
@@ -209,7 +226,7 @@ var integerResources = sets.NewString(
 
 // IsIntegerResourceName returns true if the resource is measured in integer values
 func IsIntegerResourceName(str string) bool {
-	return integerResources.Has(str) || IsOpaqueIntResourceName(ResourceName(str))
+	return integerResources.Has(str) || IsOpaqueIntResourceName(ResourceName(str)) || IsGroupResourceName(ResourceName(str))
 }
 
 // NewDeleteOptions returns a DeleteOptions indicating the resource should
@@ -628,4 +645,20 @@ func PodAnnotationsFromSysctls(sysctls []Sysctl) string {
 		kvs[i] = fmt.Sprintf("%s=%s", sysctls[i].Name, sysctls[i].Value)
 	}
 	return strings.Join(kvs, ",")
+}
+
+// sorted string keys
+func SortedStringKeys(x interface{}) []string {
+	t := reflect.TypeOf(x)
+	keys := []string{}
+	if t.Kind() == reflect.Map {
+		mv := reflect.ValueOf(x)
+		keysV := mv.MapKeys()
+		for _, val := range keysV {
+			keys = append(keys, val.String())
+		}
+		sort.Strings(keys)
+		return keys
+	}
+	panic("Not a map")
 }

@@ -25,6 +25,7 @@ import (
 	"k8s.io/kubernetes/pkg/api/resource"
 	clientcache "k8s.io/kubernetes/pkg/client/cache"
 	priorityutil "k8s.io/kubernetes/plugin/pkg/scheduler/algorithm/priorities/util"
+	"k8s.io/kubernetes/plugin/pkg/scheduler/algorithm/scorer"
 )
 
 var emptyResource = Resource{}
@@ -60,6 +61,7 @@ type Resource struct {
 	Memory             int64
 	NvidiaGPU          int64
 	OpaqueIntResources map[api.ResourceName]int64
+	Scorer             map[api.ResourceName]int32
 }
 
 func (r *Resource) ResourceList() api.ResourceList {
@@ -72,6 +74,14 @@ func (r *Resource) ResourceList() api.ResourceList {
 		result[rName] = *resource.NewQuantity(rQuant, resource.DecimalSI)
 	}
 	return result
+}
+
+func (r *Resource) AddOpaque(name api.ResourceName, quantity int64) {
+	// Lazily allocate opaque integer resource map.
+	if r.OpaqueIntResources == nil {
+		r.OpaqueIntResources = map[api.ResourceName]int64{}
+	}
+	r.OpaqueIntResources[name] += quantity
 }
 
 // NewNodeInfo returns a ready to use empty NodeInfo object.
@@ -181,6 +191,78 @@ func hasPodAffinityConstraints(pod *api.Pod) bool {
 	return affinity.PodAffinity != nil || affinity.PodAntiAffinity != nil
 }
 
+func (n *NodeInfo) updateGroupResourceForContainer(cont *api.Container, bInitContainer bool,
+	podResources map[api.ResourceName]int64, updatedUsedByNode map[api.ResourceName]int64) {
+
+	allocatable := n.allocatableResource.OpaqueIntResources
+	for resource, allocatedFrom := range cont.Resources.AllocateFrom {
+		requestedResourceV := cont.Resources.Requests[resource]
+		requestedResource := &requestedResourceV
+		val := requestedResource.Value()
+		allocatableRes := allocatable[allocatedFrom]
+		podRes := podResources[allocatedFrom]
+		nodeRes := updatedUsedByNode[allocatedFrom]
+		scorerFn := scorer.SetScorer(allocatedFrom, n.allocatableResource.Scorer[allocatedFrom])
+		_, _, _, newPodUsed, newNodeUsed := scorerFn(allocatableRes, podRes, nodeRes, []int64{val}, bInitContainer)
+		podResources[allocatedFrom] = newPodUsed
+		updatedUsedByNode[allocatedFrom] = newNodeUsed
+	}
+}
+
+// ComputePodGroupResources returns resources needed by pod & updated node resources
+func (n *NodeInfo) ComputePodGroupResources(spec *api.PodSpec, bRemovePod bool) (
+	podResources map[api.ResourceName]int64, updatedUsedByNode map[api.ResourceName]int64) {
+
+	updatedUsedByNode = make(map[api.ResourceName]int64)
+	podResources = make(map[api.ResourceName]int64)
+	for key, val := range n.requestedResource.OpaqueIntResources {
+		updatedUsedByNode[key] = val
+	}
+
+	// go over running containers to compute utilized resources
+	for _, cont := range spec.Containers {
+		n.updateGroupResourceForContainer(&cont, false, podResources, updatedUsedByNode)
+	}
+
+	// now go over init containers to compute resources required
+	for _, cont := range spec.InitContainers {
+		n.updateGroupResourceForContainer(&cont, true, podResources, updatedUsedByNode)
+	}
+
+	// for pod removal, remove all resources used by pod at end
+	if bRemovePod {
+		for allocatedFrom, podUsed := range podResources {
+			scorerFn := scorer.SetScorer(allocatedFrom, n.allocatableResource.Scorer[allocatedFrom])
+			_, _, _, _, newNodeUsed := scorerFn(0, 0, n.requestedResource.OpaqueIntResources[allocatedFrom], []int64{-podUsed}, false)
+			updatedUsedByNode[allocatedFrom] = newNodeUsed
+		}
+	}
+
+	return podResources, updatedUsedByNode
+}
+
+// TakePodGroupResource takes pod resource from node, pod added
+func (n *NodeInfo) takePodGroupResource(spec *api.PodSpec) {
+	_, usedResources := n.ComputePodGroupResources(spec, false)
+	requested := n.requestedResource
+
+	for usedResourceKey, usedResourceVal := range usedResources {
+		requested.AddOpaque(usedResourceKey, 0) // just to make sure key exists
+		requested.OpaqueIntResources[usedResourceKey] = usedResourceVal
+	}
+}
+
+// ReturnPodGroupResource returns pod resource to node, pod removed
+func (n *NodeInfo) returnPodGroupResource(spec *api.PodSpec) {
+	_, usedResources := n.ComputePodGroupResources(spec, true)
+	requested := n.requestedResource
+
+	for usedResourceKey, usedResourceVal := range usedResources {
+		requested.AddOpaque(usedResourceKey, 0)
+		requested.OpaqueIntResources[usedResourceKey] = usedResourceVal
+	}
+}
+
 // addPod adds pod information to this NodeInfo.
 func (n *NodeInfo) addPod(pod *api.Pod) {
 	// cpu, mem, nvidia_gpu, non0_cpu, non0_mem := calculateResource(pod)
@@ -192,8 +274,12 @@ func (n *NodeInfo) addPod(pod *api.Pod) {
 		n.requestedResource.OpaqueIntResources = map[api.ResourceName]int64{}
 	}
 	for rName, rQuant := range res.OpaqueIntResources {
-		n.requestedResource.OpaqueIntResources[rName] += rQuant
+		if api.IsOpaqueIntResourceName(rName) {
+			n.requestedResource.OpaqueIntResources[rName] += rQuant
+		}
 	}
+	n.takePodGroupResource(&pod.Spec)
+
 	n.nonzeroRequest.MilliCPU += non0_cpu
 	n.nonzeroRequest.Memory += non0_mem
 	n.pods = append(n.pods, pod)
@@ -243,8 +329,12 @@ func (n *NodeInfo) removePod(pod *api.Pod) error {
 				n.requestedResource.OpaqueIntResources = map[api.ResourceName]int64{}
 			}
 			for rName, rQuant := range res.OpaqueIntResources {
-				n.requestedResource.OpaqueIntResources[rName] -= rQuant
+				if api.IsOpaqueIntResourceName(rName) {
+					n.requestedResource.OpaqueIntResources[rName] -= rQuant
+				}
 			}
+			n.returnPodGroupResource(&pod.Spec)
+
 			n.nonzeroRequest.MilliCPU -= non0_cpu
 			n.nonzeroRequest.Memory -= non0_mem
 			n.generation++
@@ -297,13 +387,26 @@ func (n *NodeInfo) SetNode(node *api.Node) error {
 		case api.ResourcePods:
 			n.allowedPodNumber = int(rQuant.Value())
 		default:
-			if api.IsOpaqueIntResourceName(rName) {
+			if api.IsOpaqueIntResourceName(rName) || api.IsGroupResourceName(rName) {
 				// Lazily allocate opaque resource map.
 				if n.allocatableResource.OpaqueIntResources == nil {
 					n.allocatableResource.OpaqueIntResources = map[api.ResourceName]int64{}
 				}
 				n.allocatableResource.OpaqueIntResources[rName] = rQuant.Value()
 			}
+		}
+		if n.allocatableResource.Scorer == nil {
+			n.allocatableResource.Scorer = map[api.ResourceName]int32{}
+		}
+		if node.Status.Scorer != nil {
+			val, available := node.Status.Scorer[rName]
+			if available {
+				n.allocatableResource.Scorer[rName] = val
+			} else {
+				n.allocatableResource.Scorer[rName] = api.DefaultScorer
+			}
+		} else {
+			n.allocatableResource.Scorer[rName] = api.DefaultScorer
 		}
 	}
 	n.generation++

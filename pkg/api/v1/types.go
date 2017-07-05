@@ -1357,6 +1357,11 @@ type ResourceRequirements struct {
 	// More info: http://kubernetes.io/docs/user-guide/compute-resources/
 	// +optional
 	Requests ResourceList `json:"requests,omitempty" protobuf:"bytes,2,rep,name=requests,casttype=ResourceList,castkey=ResourceName"`
+	// AllocateFrom describes the location of compute resources being used on the node
+	// +optional
+	AllocateFrom ResourceLocation `json:"allocatefrom,omitempty" protobuf:"bytes,3,rep,name=allocatefrom,casttype=ResourceLocation,castkey=ResourceName"`
+	// Scorer describes scoring, checking, and taking of resource
+	Scorer ResourceScorer `json:"scorer,omitempty" protobuf:"bytes,4,rep,name=scorer,casttype=ResourceScorer,castkey=ResourceName"`
 }
 
 const (
@@ -2107,6 +2112,9 @@ type PodSpec struct {
 	// If not specified, the pod will not have a domainname at all.
 	// +optional
 	Subdomain string `json:"subdomain,omitempty" protobuf:"bytes,17,opt,name=subdomain"`
+
+	// Tells whether we need to allocate resource locations
+	AllocatingResources bool `json:"-"`
 }
 
 // PodSecurityContext holds pod-level security attributes and common container settings.
@@ -2910,6 +2918,9 @@ type NodeStatus struct {
 	// List of volumes that are attached to the node.
 	// +optional
 	VolumesAttached []AttachedVolume `json:"volumesAttached,omitempty" protobuf:"bytes,10,rep,name=volumesAttached"`
+	// Scorer represents the scorer function for the resources on the node
+	// +optional
+	Scorer ResourceScorer `json:"scorer,omitempty" protobuf:"bytes,11,rep,name=scorer"`
 }
 
 type UniqueVolumeName string
@@ -3056,8 +3067,31 @@ const (
 	// Number of Pods that may be running on this Node: see ResourcePods
 )
 
+const (
+	// Namespace prefix for opaque counted resources (alpha).
+	ResourceOpaqueIntPrefix = "pod.alpha.kubernetes.io/opaque-int-resource-"
+	// Namespace prefix for group resources (alpha).
+	ResourceGroupPrefix = "alpha.kubernetes.io/group-resource"
+)
+
 // ResourceList is a set of (resource name, quantity) pairs.
 type ResourceList map[ResourceName]resource.Quantity
+
+// ResourceLocation is a set of (resource name, resource location on node) pairs.
+type ResourceLocation map[ResourceName]ResourceName
+
+// ResourceScorer is a set of (resource name, scorer) pairs.
+type ResourceScorer map[ResourceName]int32
+
+const (
+	DefaultScorer = iota
+	LeftOverScorer
+	EnumLeftOverScorer
+)
+
+// ResourceScoreFunc is a function which takes in (allocatable, usedByPod, usedByNode, requested, initContainer) resources
+// and returns (resourceFits, score, usedByContainer, newUsedByPod, newUsedByNode)
+type ResourceScoreFunc func(alloctable int64, usedByPod int64, usedByNode int64, requested int64, initContainer bool) (bool, float64, int64, int64, int64)
 
 // +genclient=true
 // +nonNamespaced=true

@@ -23,6 +23,7 @@ import (
 	"k8s.io/kubernetes/pkg/client/record"
 	"k8s.io/kubernetes/pkg/util/wait"
 	"k8s.io/kubernetes/plugin/pkg/scheduler/algorithm"
+	"k8s.io/kubernetes/plugin/pkg/scheduler/algorithm/predicates"
 	"k8s.io/kubernetes/plugin/pkg/scheduler/metrics"
 	"k8s.io/kubernetes/plugin/pkg/scheduler/schedulercache"
 
@@ -38,10 +39,15 @@ type PodConditionUpdater interface {
 	Update(pod *api.Pod, podCondition *api.PodCondition) error
 }
 
+type PodUpdater interface {
+	Update(pod *api.Pod) error
+}
+
 // Scheduler watches for new unscheduled pods. It attempts to find
 // nodes that they fit on and writes bindings back to the api server.
 type Scheduler struct {
-	config *Config
+	cachedNodeInfoMap map[string]*schedulercache.NodeInfo
+	config            *Config
 }
 
 type Config struct {
@@ -55,6 +61,7 @@ type Config struct {
 	// with scheduling, PodScheduled condition will be updated in apiserver in /bind
 	// handler so that binding and setting PodCondition it is atomic.
 	PodConditionUpdater PodConditionUpdater
+	PodUpdater          PodUpdater
 
 	// NextPod should be a function that blocks until the next pod
 	// is available. We don't use a channel for this, because scheduling
@@ -76,7 +83,8 @@ type Config struct {
 // New returns a new scheduler.
 func New(c *Config) *Scheduler {
 	s := &Scheduler{
-		config: c,
+		config:            c,
+		cachedNodeInfoMap: make(map[string]*schedulercache.NodeInfo),
 	}
 	metrics.Register()
 	return s
@@ -92,6 +100,7 @@ func (s *Scheduler) scheduleOne() {
 
 	glog.V(3).Infof("Attempting to schedule pod: %v/%v", pod.Namespace, pod.Name)
 	start := time.Now()
+	predicates.PodClearAllocateFrom(&pod.Spec) // clear allocate from so that scheduler predicates search
 	dest, err := s.config.Algorithm.Schedule(pod, s.config.NodeLister)
 	if err != nil {
 		glog.V(1).Infof("Failed to schedule pod: %v/%v", pod.Namespace, pod.Name)
@@ -104,6 +113,16 @@ func (s *Scheduler) scheduleOne() {
 		})
 		return
 	}
+
+	// run resource allocation on selected node
+	pod.Spec.AllocatingResources = true
+	s.config.SchedulerCache.UpdateNodeNameToInfoMap(s.cachedNodeInfoMap)
+	predicates.PodFitsGroupConstraints(s.cachedNodeInfoMap[dest], &pod.Spec)
+	if len(pod.Spec.Containers) > 0 {
+		glog.V(2).Infof("Pod: %v Cont0 AfterAlloc Resources: %v", pod.Name, pod.Spec.Containers[0].Resources)
+	}
+	pod.Spec.AllocatingResources = false
+
 	metrics.SchedulingAlgorithmLatency.Observe(metrics.SinceInMicroseconds(start))
 
 	// Optimistically assume that the binding will succeed and send it to apiserver
@@ -112,6 +131,11 @@ func (s *Scheduler) scheduleOne() {
 	// immediately.
 	assumed := *pod
 	assumed.Spec.NodeName = dest
+	if len(assumed.Spec.Containers) > 0 {
+		glog.V(3).Infof("PodUID: %v PodName: %v Name: %v NodeName: %v AllocatedGrps: %v",
+			assumed.UID, assumed.Name, assumed.Spec.Containers[0].Name, assumed.Spec.Containers[0].Resources.AllocateFrom)
+	}
+	//glog.V(2).Infof("PodUID: %v PodName: %v Stack: %v", assumed.UID, assumed.Name, string(debug.Stack()))
 	if err := s.config.SchedulerCache.AssumePod(&assumed); err != nil {
 		glog.Errorf("scheduler cache AssumePod failed: %v", err)
 		// TODO: This means that a given pod is already in cache (which means it
@@ -126,6 +150,22 @@ func (s *Scheduler) scheduleOne() {
 	go func() {
 		defer metrics.E2eSchedulingLatency.Observe(metrics.SinceInMicroseconds(start))
 
+		// update pod with new info
+		err := s.config.PodUpdater.Update(pod)
+		if err != nil {
+			glog.V(1).Infof("Failed to update pod: %v/%v", pod.Namespace, pod.Name)
+			if err := s.config.SchedulerCache.ForgetPod(&assumed); err != nil {
+				glog.Errorf("scheduler cache ForgetPod failed: %v", err)
+			}
+			s.config.Recorder.Eventf(pod, api.EventTypeNormal, "FailedScheduling", "Podupdate rejected: %v", err)
+			s.config.PodConditionUpdater.Update(pod, &api.PodCondition{
+				Type:   api.PodScheduled,
+				Status: api.ConditionFalse,
+				Reason: "PodupdateRejected",
+			})
+			return
+		}
+
 		b := &api.Binding{
 			ObjectMeta: api.ObjectMeta{Namespace: pod.Namespace, Name: pod.Name},
 			Target: api.ObjectReference{
@@ -137,7 +177,7 @@ func (s *Scheduler) scheduleOne() {
 		bindingStart := time.Now()
 		// If binding succeeded then PodScheduled condition will be updated in apiserver so that
 		// it's atomic with setting host.
-		err := s.config.Binder.Bind(b)
+		err = s.config.Binder.Bind(b)
 		if err != nil {
 			glog.V(1).Infof("Failed to bind pod: %v/%v", pod.Namespace, pod.Name)
 			if err := s.config.SchedulerCache.ForgetPod(&assumed); err != nil {
